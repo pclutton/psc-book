@@ -189,9 +189,14 @@ function fmtBooking(lb){ if(!lb) return '';
 
 function fillForm(key){
   const e = entry(key), r = e.request;
-  $('enabled').checked = !!r.enabled;
   const tomorrow = new Date(Date.now()+86400000).toISOString().slice(0,10);
-  $('date').value = (r.date && r.date!=='today') ? r.date : tomorrow;
+  const today = new Date().toISOString().slice(0,10);
+  // Roll the date forward: a stored date that's today/future is kept; anything
+  // stale (past date, "today", or missing) defaults to tomorrow AND shows as OFF,
+  // so a spent booking never re-arms itself for a new day.
+  const stale = !(r.date && r.date!=='today' && r.date >= today);
+  $('date').value = stale ? tomorrow : r.date;
+  $('enabled').checked = stale ? false : !!r.enabled;
   timeOrder = [...(r.times||[])];
   renderTimes();
   const names = Object.keys(e.presets).concat(['auto']);
