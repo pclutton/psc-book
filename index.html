@@ -102,7 +102,7 @@
   <label>Courts</label>
   <select id="preset"></select>
 
-  <label>Partner (must be a PSC member)</label>
+  <label>Partner</label>
   <select id="partnerSel"></select>
   <input type="text" id="partnerName" placeholder="Full name e.g. John Smith" style="display:none;margin-top:8px">
 
@@ -175,7 +175,7 @@ function showStatus(key){
   if(scheduled(key)){
     const t = (r.times||[]).join(', ') || 'no times set';
     $('status').className = 'status armed';
-    $('status').textContent = `Booking scheduled for ${r.date} at 07:30 — ${t}.`;
+    $('status').textContent = `Booking scheduled for ${r.date} — ${t}.`;
   } else {
     $('status').className = 'status';
     $('status').textContent = 'No booking scheduled.';
