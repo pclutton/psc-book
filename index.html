@@ -32,7 +32,10 @@
            font-weight:600; margin-top:14px; cursor:pointer; }
   .primary { background:var(--accent); color:#04210f; }
   .primary:disabled { background:#475569; color:#94a3b8; cursor:not-allowed; }
-  .danger { background:transparent; border:1px solid var(--danger); color:#fca5a5; }
+  .btnrow { display:flex; gap:10px; }
+  .btnrow button { margin-top:14px; }
+  .cancel { background:#b45309; color:#fff7ed; }              /* amber when armed */
+  .cancel:disabled { background:#334155; color:#64748b; cursor:not-allowed; }
   .link { background:none; color:var(--accent); text-decoration:underline; padding:0;
           width:auto; margin:6px 0 0; font-size:.85rem; }
   .status { font-size:.9rem; color:var(--muted); margin-top:10px; }
@@ -87,13 +90,11 @@
   <label>Who's booking?</label>
   <select id="user"></select>
 
-  <div class="toggle"><input type="checkbox" id="enabled">
-    <label for="enabled" style="margin:0;color:var(--ink)">Book this for me at 07:30</label></div>
   <div class="status" id="status"></div>
-  <button class="danger" id="cancelBtn" type="button" style="display:none">Cancel my booking</button>
 
-  <label>Play date (the bot books that morning at 07:30)</label>
+  <label>Date</label>
   <input type="date" id="date">
+  <div class="warn" id="dateNote"></div>
 
   <label>Times &mdash; tap in order of preference</label>
   <div class="chips" id="times"></div>
@@ -104,9 +105,6 @@
   <label>Partner (must be a PSC member)</label>
   <select id="partnerSel"></select>
   <input type="text" id="partnerName" placeholder="Full name e.g. John Smith" style="display:none;margin-top:8px">
-
-  <div class="toggle"><input type="checkbox" id="once" checked>
-    <label for="once" style="margin:0;color:var(--ink)">Turn off after it books (one-shot)</label></div>
 
   <details id="presetEditor">
     <summary>Edit court preferences</summary>
@@ -119,7 +117,10 @@
   </details>
 
   <div class="warn" id="lockWarn">Booking is locking in for today &mdash; changes now apply to future days.</div>
-  <button class="primary" id="save" type="button">Save</button>
+  <div class="btnrow">
+    <button class="primary" id="book" type="button">Book</button>
+    <button class="cancel" id="cancelBtn" type="button" disabled>Cancel</button>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -160,21 +161,39 @@ async function ghPut(obj, sha){
       content: b64e(JSON.stringify(obj,null,2)+'\n'), sha, branch: CFG.branch }) });
 }
 
-// ---------- app icon = SAVED status light (blue off / green armed) ----------
-// Reflects the last-saved/loaded state, NOT the live checkbox - toggling without
-// saving must not move it; only a Save (which reloads) does.
-function savedArmed(key){
-  const r = entry(key).request, today = new Date().toISOString().slice(0,10);
-  const stale = !(r.date && r.date!=='today' && r.date >= today);
-  return !!r.enabled && !stale;
+// ---------- forward-looking schedule state ----------
+// The app only ever shows/manages the NEXT SCHEDULED booking - never a court the bot
+// has already booked. So you can schedule tomorrow while holding a court today.
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function scheduled(key){
+  const r = entry(key).request;
+  return !!r.enabled && !!r.date && r.date !== 'today' && r.date >= todayISO();
 }
-function updateIcon(){ $('appIcon').src = savedArmed($('user').value) ? ICON_GREEN : ICON_BLUE; }
+function updateIcon(){ $('appIcon').src = scheduled($('user').value) ? ICON_GREEN : ICON_BLUE; }
 function showStatus(key){
-  const e = entry(key);
-  if(e.cancel_requested){ $('status').className='status'; $('status').textContent='Cancel requested — will be processed shortly.'; }
-  else if(e.last_booking){ $('status').className='status booked'; $('status').textContent=fmtBooking(e.last_booking); }
-  else { const armed = savedArmed(key); $('status').className='status'+(armed?' armed':'');
-         $('status').textContent = armed? 'Armed — the bot will book on the chosen morning.':'Off.'; }
+  const r = entry(key).request;
+  if(scheduled(key)){
+    const t = (r.times||[]).join(', ') || 'no times set';
+    $('status').className = 'status armed';
+    $('status').textContent = `Booking scheduled for ${r.date} at 07:30 — ${t}.`;
+  } else {
+    $('status').className = 'status';
+    $('status').textContent = 'No booking scheduled.';
+  }
+}
+function updateButtons(key){
+  const s = scheduled(key), locked = inLockout();
+  $('book').textContent = s ? 'Amend' : 'Book';
+  $('book').disabled = locked;
+  $('cancelBtn').disabled = locked || !s;      // grey (disabled) when nothing scheduled
+}
+// Picking today after the 07:30 window has gone would never run - say so.
+function updateDateNote(){
+  const past = $('date').value === todayISO() && londonMinutes() > CFG.lockToMin;
+  $('dateNote').style.display = past ? 'block' : 'none';
+  $('dateNote').textContent = past
+    ? "Today's 07:30 booking window has already passed — pick a later date."
+    : '';
 }
 
 // ---------- tap-to-rank chips ----------
@@ -198,19 +217,13 @@ function renderEpCourts(){ renderChips('epCourts', [1,2,3,4,5,6,7,8,9,10].map(St
   v=>{ tapRank(epOrder,v); renderEpCourts(); }); }
 
 // ---------- form fill / read ----------
-function fmtBooking(lb){ if(!lb) return '';
-  return `Booked: Court ${lb.court}, ${lb.date} ${lb.from}–${lb.to}`; }
-
 function fillForm(key){
   const e = entry(key), r = e.request;
   const tomorrow = new Date(Date.now()+86400000).toISOString().slice(0,10);
-  const today = new Date().toISOString().slice(0,10);
-  // Roll the date forward: a stored date that's today/future is kept; anything
-  // stale (past date, "today", or missing) defaults to tomorrow AND shows as OFF,
-  // so a spent booking never re-arms itself for a new day.
-  const stale = !(r.date && r.date!=='today' && r.date >= today);
-  $('date').value = stale ? tomorrow : r.date;
-  $('enabled').checked = stale ? false : !!r.enabled;
+  // Show the scheduled date if there is one; otherwise default to tomorrow.
+  // Past dates can't be picked at all (min), so a spent schedule never lingers.
+  $('date').min = todayISO();
+  $('date').value = scheduled(key) ? r.date : tomorrow;
   timeOrder = [...(r.times||[])];
   renderTimes();
   const names = Object.keys(e.presets).concat(['auto']);
@@ -223,13 +236,13 @@ function fillForm(key){
     }).join('') + `<option value="new">Other member…</option>`;
   $('partnerName').style.display = e.saved_partners.length? 'none':'block';
   if(!e.saved_partners.length) $('partnerSel').value='new';
-  $('once').checked = r.once!==false;
   showStatus(key);
-  $('cancelBtn').style.display = (e.last_booking && !e.cancel_requested)? 'block':'none';
   const pn = Object.keys(e.presets);
   $('epSel').innerHTML = pn.map(p=>`<option>${p}</option>`).join('') + `<option value="__new">New preset…</option>`;
   loadEditorPreset(key);
   updateIcon();
+  updateButtons(key);
+  updateDateNote();
 }
 function loadEditorPreset(key){
   const e = entry(key), sel=$('epSel').value;
@@ -237,7 +250,7 @@ function loadEditorPreset(key){
   else { $('epName').value=sel; epOrder=(e.presets[sel]||[]).map(String); }
   renderEpCourts();
 }
-function readForm(key){
+function readForm(key, enabled){
   const e = entry(key);
   let partner;
   if($('partnerSel').value==='new'){
@@ -249,9 +262,10 @@ function readForm(key){
   } else {
     partner = e.saved_partners[+$('partnerSel').value] || null;
   }
-  e.request = { enabled:$('enabled').checked, date:$('date').value||'today',
-    times:[...timeOrder], court_preset:$('preset').value,
-    once:$('once').checked, partner };
+  // `enabled` is set by the Book / Cancel buttons, not a checkbox. Always an
+  // absolute date (the picker's min is today, so it can never be in the past).
+  e.request = { enabled, date:$('date').value, times:[...timeOrder],
+    court_preset:$('preset').value, partner };
   return e;
 }
 
@@ -265,11 +279,13 @@ async function loadAll(){
     fillForm($('user').value);
   } catch(e){ toast(e.message, true); }
 }
-async function save(extra){
+// enabled=true -> Book/Amend, false -> Cancel. Omitted (preset editor) keeps
+// whatever is currently scheduled.
+async function save(enabled, okMsg){
   if(inLockout()){ toast('Locked until after 07:35', true); return; }
   const key = $('user').value;
-  const edited = readForm(key);
-  if(extra) Object.assign(edited, extra);
+  const en = (enabled === undefined) ? scheduled(key) : enabled;
+  const edited = readForm(key, en);
   localStorage.setItem('psc_pending', JSON.stringify({key}));
   for(let i=0;i<5;i++){
     try {
@@ -277,7 +293,7 @@ async function save(extra){
       json[key] = { ...(json[key]||{}), ...edited };    // merge: keep other users intact
       const res = await ghPut(json, sha);
       if(res.ok){ localStorage.removeItem('psc_pending'); loaded=json;
-        fillForm(key); toast('Saved ✓'); return; }
+        fillForm(key); toast(okMsg || 'Saved ✓'); return; }
       if(res.status===409){ await new Promise(r=>setTimeout(r,300*(i+1))); continue; }
       toast('Save failed ('+res.status+')', true); return;
     } catch(e){ toast(e.message, true); return; }
@@ -285,8 +301,8 @@ async function save(extra){
   toast('Conflict — please try again', true);
 }
 
-function updateLockUI(){ const l=inLockout(); $('lockWarn').style.display=l?'block':'none';
-  $('save').disabled=l; }
+function updateLockUI(){ $('lockWarn').style.display = inLockout()?'block':'none';
+  updateButtons($('user').value); }
 
 // ---------- wire up ----------
 $('appIcon').src = ICON_BLUE;
@@ -300,14 +316,7 @@ $('tokenHelp').onclick = ()=>{ const t=$('tokenHelpText');
 $('saveToken').onclick = ()=>{ const v=$('token').value.trim();
   if(!v){toast('Enter a token',true);return;} localStorage.setItem('psc_token',v); loadAll(); };
 $('user').onchange = ()=> fillForm($('user').value);
-$('enabled').onchange = ()=>{
-  // toggling doesn't change the icon (that tracks the SAVED state); just hint to save
-  const key=$('user').value, e=entry(key);
-  if(e.cancel_requested || e.last_booking){ return; }
-  if($('enabled').checked !== savedArmed(key)){
-    $('status').className='status'; $('status').textContent='Unsaved change — tap Save to apply.';
-  } else { showStatus(key); } };
-$('date').onchange = renderTimes;
+$('date').onchange = ()=>{ renderTimes(); updateDateNote(); };
 $('partnerSel').onchange = ()=>{ $('partnerName').style.display =
   $('partnerSel').value==='new'?'block':'none'; };
 $('epSel').onchange = ()=> loadEditorPreset($('user').value);
@@ -318,11 +327,16 @@ $('epSave').onclick = ()=>{
   const e = entry($('user').value);
   e.presets[name] = epOrder.map(Number);
   save(); };
+$('book').onclick = ()=>{
+  if(!$('date').value){ toast('Pick a date', true); return; }
+  if(!timeOrder.length){ toast('Tap at least one time', true); return; }
+  const key=$('user').value;
+  save(true, scheduled(key) ? 'Booking amended ✓' : 'Booking scheduled ✓'); };
 $('cancelBtn').onclick = ()=>{
-  const e = entry($('user').value);
-  if(confirm(`Cancel this booking?\n${fmtBooking(e.last_booking)}`))
-    save({cancel_requested:true}); };
-$('save').onclick = ()=> save();
+  const key=$('user').value, r=entry(key).request;
+  if(!scheduled(key)) return;                      // nothing scheduled - do nothing
+  if(confirm(`Remove the scheduled booking for ${r.date}?`))
+    save(false, 'Scheduled booking removed'); };
 updateLockUI(); setInterval(updateLockUI, 15000);
 </script>
 </body>
