@@ -103,6 +103,7 @@
   <label>Partner</label>
   <select id="partnerSel"></select>
   <input type="text" id="partnerName" placeholder="Full name e.g. John Smith" style="display:none;margin-top:8px">
+  <select id="candidateSel" style="display:none;margin-top:8px"></select>
 
   <details id="presetEditor">
     <summary>Edit court preferences</summary>
@@ -227,12 +228,14 @@ function fillForm(key){
   $('preset').innerHTML = names.map(p=>`<option${p===r.court_preset?' selected':''}>${p}</option>`).join('');
   // partner dropdown from saved_partners; a blank member_id shows "(finding ID...)"
   $('partnerSel').innerHTML = e.saved_partners.map((p,i)=>{
-      const pend = p.member_id ? '' : '  (finding ID…)';
+      const n = p.candidates && p.candidates.length;
+      const pend = p.member_id ? '' : (n? `  (${n} match${n>1?'es':''} — pick below)` : '  (finding ID…)');
       const sel = r.partner && r.partner.name===p.name ? ' selected' : '';
       return `<option value="${i}"${sel}>${p.name}${pend}</option>`;
     }).join('') + `<option value="new">Other member…</option>`;
   $('partnerName').style.display = e.saved_partners.length? 'none':'block';
   if(!e.saved_partners.length) $('partnerSel').value='new';
+  updateCandidatePicker(key);
   showStatus(key);
   const pn = Object.keys(e.presets);
   $('epSel').innerHTML = pn.map(p=>`<option>${p}</option>`).join('') + `<option value="__new">New preset…</option>`;
@@ -245,6 +248,28 @@ function loadEditorPreset(key){
   if(sel==='__new'){ $('epName').value=''; epOrder=[]; }
   else { $('epName').value=sel; epOrder=(e.presets[sel]||[]).map(String); }
   renderEpCourts();
+}
+// Bare first-name partners the bot couldn't auto-resolve (e.g. 'Michael' - too
+// common to search) get a short `candidates` list from the resolver instead of
+// a member_id. Show it as a second dropdown; picking one replaces the saved
+// entry in place with the chosen name+id, same as if it had auto-resolved.
+function updateCandidatePicker(key){
+  const e = entry(key), v = $('partnerSel').value;
+  const p = v!=='new' ? e.saved_partners[+v] : null;
+  const cands = p && !p.member_id ? p.candidates : null;
+  if(cands && cands.length){
+    $('candidateSel').innerHTML = cands.map((c,i)=>`<option value="${i}">${c.name}</option>`).join('');
+    $('candidateSel').style.display = 'block';
+  } else {
+    $('candidateSel').style.display = 'none';
+  }
+}
+function pickCandidate(key){
+  const e = entry(key), idx = +$('partnerSel').value;
+  const p = e.saved_partners[idx], c = p.candidates[+$('candidateSel').value];
+  e.saved_partners[idx] = { name: c.name, member_id: c.member_id };
+  if(e.request.partner && e.request.partner.name === p.name) e.request.partner = { ...c };
+  fillForm(key);
 }
 function readForm(key, enabled){
   const e = entry(key);
@@ -317,7 +342,8 @@ $('saveToken').onclick = ()=>{ const v=$('token').value.trim();
 $('user').onchange = ()=>{ localStorage.setItem('psc_last_user', $('user').value); fillForm($('user').value); };
 $('date').onchange = ()=>{ renderTimes(); updateDateNote(); };
 $('partnerSel').onchange = ()=>{ $('partnerName').style.display =
-  $('partnerSel').value==='new'?'block':'none'; };
+  $('partnerSel').value==='new'?'block':'none'; updateCandidatePicker($('user').value); };
+$('candidateSel').onchange = ()=> pickCandidate($('user').value);
 $('epSel').onchange = ()=> loadEditorPreset($('user').value);
 $('epSave').onclick = ()=>{
   const name=$('epName').value.trim();
