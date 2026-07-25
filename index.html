@@ -109,7 +109,6 @@
     <summary>Manage partners</summary>
     <label>Add a partner</label>
     <input type="text" id="newPartnerName" placeholder="Full name e.g. John Smith">
-    <input type="text" id="newPartnerId" inputmode="numeric" placeholder="Member ID (optional)" style="margin-top:8px">
     <button class="primary" id="partnerAdd" type="button">Add partner</button>
     <button class="cancel" id="partnerDel" type="button">Remove selected partner</button>
   </details>
@@ -296,14 +295,15 @@ function updateRemoveBtn(key){
 function addPartner(key){
   const e = entry(key);
   const name = $('newPartnerName').value.trim();
-  const id = $('newPartnerId').value.trim();
   if(!name){ toast('Enter a name', true); return; }
-  if(id && !/^\d+$/.test(id)){ toast('Member ID must be digits only', true); return; }
   if(e.saved_partners.some(p=>p.name.toLowerCase()===name.toLowerCase())){
     toast('Already in the list', true); return; }
-  // member_id blank -> the bot's resolver fills it in; supplying it here skips that.
-  e.saved_partners.push({ name, member_id: id });
-  $('newPartnerName').value=''; $('newPartnerId').value='';
+  // Always blank: the bot's resolver fills in the INTERNAL add_medspiller id. There
+  // is deliberately no ID field - the number the club shows you on the member list
+  // is a different one (member no. 6111 vs internal 1257 for the same person), so
+  // letting it be typed in would silently mark a partner "resolved" with a wrong id.
+  e.saved_partners.push({ name, member_id: "" });
+  $('newPartnerName').value='';
   save(undefined, 'Partner added ✓');          // undefined = keep the armed state as-is
 }
 function removePartner(key){
