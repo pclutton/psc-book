@@ -105,6 +105,15 @@
   <input type="text" id="partnerName" placeholder="Full name e.g. John Smith" style="display:none;margin-top:8px">
   <select id="candidateSel" style="display:none;margin-top:8px"></select>
 
+  <details id="partnerEditor">
+    <summary>Manage partners</summary>
+    <label>Add a partner</label>
+    <input type="text" id="newPartnerName" placeholder="Full name e.g. John Smith">
+    <input type="text" id="newPartnerId" inputmode="numeric" placeholder="Member ID (optional)" style="margin-top:8px">
+    <button class="primary" id="partnerAdd" type="button">Add partner</button>
+    <button class="cancel" id="partnerDel" type="button">Remove selected partner</button>
+  </details>
+
   <details id="presetEditor">
     <summary>Edit court preferences</summary>
     <label>Preset</label>
@@ -226,16 +235,16 @@ function fillForm(key){
   renderTimes();
   const names = Object.keys(e.presets).concat(['auto']);
   $('preset').innerHTML = names.map(p=>`<option${p===r.court_preset?' selected':''}>${p}</option>`).join('');
-  // partner dropdown from saved_partners; a blank member_id shows "(finding ID...)"
+  // partner dropdown from saved_partners. An unresolved entry shows why: the bot's
+  // resolver sets candidates / too_common / not_found (see book.py resolve_partners).
   $('partnerSel').innerHTML = e.saved_partners.map((p,i)=>{
-      const n = p.candidates && p.candidates.length;
-      const pend = p.member_id ? '' : (n? `  (${n} match${n>1?'es':''} — pick below)` : '  (finding ID…)');
       const sel = r.partner && r.partner.name===p.name ? ' selected' : '';
-      return `<option value="${i}"${sel}>${p.name}${pend}</option>`;
+      return `<option value="${i}"${sel}>${p.name}${partnerNote(p)}</option>`;
     }).join('') + `<option value="new">Other member…</option>`;
   $('partnerName').style.display = e.saved_partners.length? 'none':'block';
   if(!e.saved_partners.length) $('partnerSel').value='new';
   updateCandidatePicker(key);
+  updateRemoveBtn(key);
   showStatus(key);
   const pn = Object.keys(e.presets);
   $('epSel').innerHTML = pn.map(p=>`<option>${p}</option>`).join('') + `<option value="__new">New preset…</option>`;
@@ -248,6 +257,15 @@ function loadEditorPreset(key){
   if(sel==='__new'){ $('epName').value=''; epOrder=[]; }
   else { $('epName').value=sel; epOrder=(e.presets[sel]||[]).map(String); }
   renderEpCourts();
+}
+// Why an entry still has no member_id, in the resolver's own terms.
+function partnerNote(p){
+  if(p.member_id) return '';
+  const n = p.candidates && p.candidates.length;
+  if(n) return `  (${n} match${n>1?'es':''} — pick below)`;
+  if(p.too_common) return '  (too common — add a surname)';
+  if(p.not_found)  return '  (not found — check spelling)';
+  return '  (finding ID…)';
 }
 // Bare first-name partners the bot couldn't auto-resolve (e.g. 'Michael' - too
 // common to search) get a short `candidates` list from the resolver instead of
@@ -270,6 +288,32 @@ function pickCandidate(key){
   e.saved_partners[idx] = { name: c.name, member_id: c.member_id };
   if(e.request.partner && e.request.partner.name === p.name) e.request.partner = { ...c };
   fillForm(key);
+}
+// Remove only applies to a real saved entry, not the "Other member…" option.
+function updateRemoveBtn(key){
+  $('partnerDel').disabled = inLockout() || $('partnerSel').value === 'new';
+}
+function addPartner(key){
+  const e = entry(key);
+  const name = $('newPartnerName').value.trim();
+  const id = $('newPartnerId').value.trim();
+  if(!name){ toast('Enter a name', true); return; }
+  if(id && !/^\d+$/.test(id)){ toast('Member ID must be digits only', true); return; }
+  if(e.saved_partners.some(p=>p.name.toLowerCase()===name.toLowerCase())){
+    toast('Already in the list', true); return; }
+  // member_id blank -> the bot's resolver fills it in; supplying it here skips that.
+  e.saved_partners.push({ name, member_id: id });
+  $('newPartnerName').value=''; $('newPartnerId').value='';
+  save(undefined, 'Partner added ✓');          // undefined = keep the armed state as-is
+}
+function removePartner(key){
+  const e = entry(key), idx = +$('partnerSel').value;
+  const p = e.saved_partners[idx];
+  if(!p || !confirm(`Remove ${p.name} from your partner list?`)) return;
+  e.saved_partners.splice(idx, 1);
+  // never leave the request pointing at a partner that no longer exists
+  if(e.request.partner && e.request.partner.name === p.name) e.request.partner = null;
+  save(undefined, 'Partner removed');
 }
 function readForm(key, enabled){
   const e = entry(key);
@@ -323,7 +367,7 @@ async function save(enabled, okMsg){
 }
 
 function updateLockUI(){ $('lockWarn').style.display = inLockout()?'block':'none';
-  updateButtons($('user').value); }
+  updateButtons($('user').value); updateRemoveBtn($('user').value); }
 
 // ---------- wire up ----------
 (function(){ for(const rel of ['icon','apple-touch-icon']){
@@ -342,8 +386,11 @@ $('saveToken').onclick = ()=>{ const v=$('token').value.trim();
 $('user').onchange = ()=>{ localStorage.setItem('psc_last_user', $('user').value); fillForm($('user').value); };
 $('date').onchange = ()=>{ renderTimes(); updateDateNote(); };
 $('partnerSel').onchange = ()=>{ $('partnerName').style.display =
-  $('partnerSel').value==='new'?'block':'none'; updateCandidatePicker($('user').value); };
+  $('partnerSel').value==='new'?'block':'none'; updateCandidatePicker($('user').value);
+  updateRemoveBtn($('user').value); };
 $('candidateSel').onchange = ()=> pickCandidate($('user').value);
+$('partnerAdd').onclick = ()=> addPartner($('user').value);
+$('partnerDel').onclick = ()=> removePartner($('user').value);
 $('epSel').onchange = ()=> loadEditorPreset($('user').value);
 $('epSave').onclick = ()=>{
   const name=$('epName').value.trim();
