@@ -152,6 +152,11 @@ function entry(key){ if(!loaded[key]) loaded[key]={};
   e.request ??= {enabled:false,date:'today',times:[],court_preset:'Hardcourt',once:true,partner:null};
   e.presets ??= JSON.parse(JSON.stringify(CFG.defaultPresets));
   e.saved_partners ??= [];
+  // Sorted here (not just at render) because the dropdown's option values are
+  // indices into this array - remove/pick-candidate/readForm all index back into
+  // it, so display order and array order have to stay the same thing.
+  e.saved_partners.sort((a,b)=>(a.name||'').localeCompare(b.name||'', undefined,
+                                                          {sensitivity:'base'}));
   return e; }
 
 async function ghGet(){
