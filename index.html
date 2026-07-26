@@ -142,6 +142,11 @@ let epOrder = [];                 // tap-to-rank state for the preset editor
 function b64e(s){ return btoa(unescape(encodeURIComponent(s))); }
 function b64d(b){ return decodeURIComponent(escape(atob(b))); }
 function token(){ return localStorage.getItem('psc_token') || ''; }
+// Names go into option values/text, so escape them (club names have apostrophes).
+function esc(s){ return String(s??'').replace(/[&<>"']/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// The one place partners are looked up: BY NAME, so re-sorting can't misidentify one.
+function findPartner(e, name){ return e.saved_partners.find(p=>p.name===name) || null; }
 function toast(msg, err){ const t=$('toast'); t.textContent=msg;
   t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',3000); }
 function londonMinutes(){ const s=new Date().toLocaleTimeString('en-GB',{timeZone:'Europe/London',hour12:false});
@@ -149,7 +154,7 @@ function londonMinutes(){ const s=new Date().toLocaleTimeString('en-GB',{timeZon
 function inLockout(){ const m=londonMinutes(); return m>=CFG.lockFromMin && m<=CFG.lockToMin; }
 function entry(key){ if(!loaded[key]) loaded[key]={};
   const e=loaded[key];
-  e.request ??= {enabled:false,date:'today',times:[],court_preset:'Hardcourt',once:true,partner:null};
+  e.request ??= {enabled:false,date:'today',times:[],court_preset:'Hardcourt',partner:null};
   e.presets ??= JSON.parse(JSON.stringify(CFG.defaultPresets));
   e.saved_partners ??= [];
   // Sorted here (not just at render) because the dropdown's option values are
@@ -241,9 +246,12 @@ function fillForm(key){
   $('preset').innerHTML = names.map(p=>`<option${p===r.court_preset?' selected':''}>${p}</option>`).join('');
   // partner dropdown from saved_partners. An unresolved entry shows why: the bot's
   // resolver sets candidates / too_common / not_found (see book.py resolve_partners).
-  $('partnerSel').innerHTML = e.saved_partners.map((p,i)=>{
+  // Keyed by NAME, never by array position: adding/removing a partner re-sorts the
+  // list, so a position captured at render time can point at a different person by
+  // the time readForm() reads it back - which silently changed who you'd booked with.
+  $('partnerSel').innerHTML = e.saved_partners.map(p=>{
       const sel = r.partner && r.partner.name===p.name ? ' selected' : '';
-      return `<option value="${i}"${sel}>${p.name}${partnerNote(p)}</option>`;
+      return `<option value="${esc(p.name)}"${sel}>${p.name}${partnerNote(p)}</option>`;
     }).join('') + `<option value="new">Other member…</option>`;
   $('partnerName').style.display = e.saved_partners.length? 'none':'block';
   if(!e.saved_partners.length) $('partnerSel').value='new';
@@ -277,20 +285,24 @@ function partnerNote(p){
 // entry in place with the chosen name+id, same as if it had auto-resolved.
 function updateCandidatePicker(key){
   const e = entry(key), v = $('partnerSel').value;
-  const p = v!=='new' ? e.saved_partners[+v] : null;
+  const p = v!=='new' ? findPartner(e, v) : null;
   const cands = p && !p.member_id ? p.candidates : null;
   if(cands && cands.length){
-    $('candidateSel').innerHTML = cands.map((c,i)=>`<option value="${i}">${c.name}</option>`).join('');
+    $('candidateSel').innerHTML = cands.map((c,i)=>`<option value="${i}">${esc(c.name)}</option>`).join('');
     $('candidateSel').style.display = 'block';
   } else {
     $('candidateSel').style.display = 'none';
   }
 }
 function pickCandidate(key){
-  const e = entry(key), idx = +$('partnerSel').value;
-  const p = e.saved_partners[idx], c = p.candidates[+$('candidateSel').value];
-  e.saved_partners[idx] = { name: c.name, member_id: c.member_id };
-  if(e.request.partner && e.request.partner.name === p.name) e.request.partner = { ...c };
+  const e = entry(key), p = findPartner(e, $('partnerSel').value);
+  if(!p || !p.candidates) return;
+  const c = p.candidates[+$('candidateSel').value];
+  if(!c) return;
+  const wasActive = e.request.partner && e.request.partner.name === p.name;
+  p.name = c.name; p.member_id = c.member_id;      // resolve in place
+  delete p.candidates; delete p.too_common; delete p.not_found;
+  if(wasActive) e.request.partner = { name: c.name, member_id: c.member_id };
   fillForm(key);
 }
 // Remove only applies to a real saved entry, not the "Other member…" option.
@@ -309,16 +321,24 @@ function addPartner(key){
   // letting it be typed in would silently mark a partner "resolved" with a wrong id.
   e.saved_partners.push({ name, member_id: "" });
   $('newPartnerName').value='';
+  // Re-render first: the push re-sorts the list, so the dropdown (and the position
+  // readForm reads) must be rebuilt before saving or the active partner can change.
+  fillForm(key);
   save(undefined, 'Partner added ✓');          // undefined = keep the armed state as-is
 }
 function removePartner(key){
-  const e = entry(key), idx = +$('partnerSel').value;
-  const p = e.saved_partners[idx];
+  const e = entry(key), p = findPartner(e, $('partnerSel').value);
   if(!p || !confirm(`Remove ${p.name} from your partner list?`)) return;
-  e.saved_partners.splice(idx, 1);
-  // never leave the request pointing at a partner that no longer exists
-  if(e.request.partner && e.request.partner.name === p.name) e.request.partner = null;
-  save(undefined, 'Partner removed');
+  const wasActive = e.request.partner && e.request.partner.name === p.name;
+  e.saved_partners = e.saved_partners.filter(x => x.name !== p.name);
+  if(wasActive) e.request.partner = null;   // never point at someone who's gone
+  // Re-render BEFORE saving so the dropdown reflects the new list and readForm()
+  // reads the intended partner rather than whatever moved into a stale position.
+  fillForm(key);
+  if(wasActive && scheduled(key))
+    toast('Removed your scheduled partner — pick another and press Amend', true);
+  else
+    save(undefined, 'Partner removed');
 }
 function readForm(key, enabled){
   const e = entry(key);
@@ -330,7 +350,7 @@ function readForm(key, enabled){
     if(partner && n && !e.saved_partners.some(p=>p.name===partner.name))
       e.saved_partners.push({name:n, member_id:""});   // remember typed partners
   } else {
-    partner = e.saved_partners[+$('partnerSel').value] || null;
+    partner = findPartner(e, $('partnerSel').value);   // by name, not by position
   }
   // `enabled` is set by the Book / Cancel buttons, not a checkbox. Always an
   // absolute date (the picker's min is today, so it can never be in the past).
