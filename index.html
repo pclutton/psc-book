@@ -41,6 +41,15 @@
   .status { font-size:.9rem; color:var(--muted); margin-top:10px; }
   .status.armed { color:var(--accent); }
   .booked { color:var(--accent); }
+  /* "Pre-lock lag: U[1.5,12]" - the literal notation, with the bounds as inputs.
+     .lagnum overrides the shared width:100% on number inputs; 4ch fits "1.5" or "11".
+     Hide the spinners: they steal width and are useless for a 1-decimal value. */
+  .lagrow { display:flex; align-items:center; gap:2px; font-size:.95rem;
+            color:var(--ink); margin:10px 0; }
+  input.lagnum { width:4.2em; padding:6px 4px; text-align:center; margin:0; }
+  input.lagnum::-webkit-outer-spin-button,
+  input.lagnum::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+  input.lagnum { -moz-appearance:textfield; appearance:textfield; }
   /* Three collapsed sections now, so keep each row tight - the whole form has to fit
      an iPhone 8 (375x667) without scrolling. */
   details { margin-top:6px; border-top:1px solid var(--line); padding-top:5px; }
@@ -126,21 +135,17 @@
   </details>
 
   <details id="lagEditor">
-    <summary>Timing</summary>
-    <label>Head start for other members (seconds, 0 = none)</label>
-    <input type="number" id="lagPre" min="0" max="60" step="0.5" inputmode="decimal">
-    <div class="toggle">
-      <input type="checkbox" id="lagPreRandom">
-      <label for="lagPreRandom" style="margin:0">Randomise it (0 to N, so you sometimes lose)</label>
-    </div>
-    <label>Pause after getting the court (seconds, min &ndash; max)</label>
-    <div class="chips">
-      <input type="number" id="lagPostMin" min="0" step="1" inputmode="numeric"
-             style="width:47%" placeholder="min">
-      <input type="number" id="lagPostMax" min="0" step="1" inputmode="numeric"
-             style="width:47%" placeholder="max">
-    </div>
-    <div class="status" id="lagNote"></div>
+    <summary>Lag</summary>
+    <!-- U[a,b] = seconds drawn uniformly from a to b. U[2,2] is a fixed 2s,
+         U[0,2] random, U[1,3] 1s fixed + 2s random, U[0,0] no lag. -->
+    <div class="lagrow">Pre-lock lag: U[<input type="number" class="lagnum" id="lagPreMin"
+        min="0" max="99" step="0.1" inputmode="decimal">,<input type="number"
+        class="lagnum" id="lagPreMax" min="0" max="99" step="0.1"
+        inputmode="decimal">]</div>
+    <div class="lagrow">Post-lock lag: U[<input type="number" class="lagnum" id="lagPostMin"
+        min="0" max="99" step="0.1" inputmode="decimal">,<input type="number"
+        class="lagnum" id="lagPostMax" min="0" max="99" step="0.1"
+        inputmode="decimal">]</div>
   </details>
 
   <div class="warn" id="lockWarn">Booking is locking in for today &mdash; changes now apply to future days.</div>
@@ -177,9 +182,10 @@ function entry(key){ if(!loaded[key]) loaded[key]={};
   e.request ??= {enabled:false,date:'today',times:[],court_preset:'Hardcourt',partner:null};
   e.presets ??= JSON.parse(JSON.stringify(CFG.defaultPresets));
   e.saved_partners ??= [];
-  // Deliberate delays, 0 = off (the bot's normal full-speed behaviour). `lags` sits
-  // OUTSIDE `request` because request is rewritten/cleared every morning.
-  e.lags ??= {pre_seconds:0, pre_random:true, post_min_seconds:0, post_max_seconds:0};
+  // Deliberate delays as U[min,max] seconds; U[0,0] = off (full-speed, the default).
+  // `lags` sits OUTSIDE `request` because request is rewritten/cleared every morning.
+  e.lags ??= {pre_min_seconds:0, pre_max_seconds:0,
+              post_min_seconds:0, post_max_seconds:0};
   // Sorted here (not just at render) because the dropdown's option values are
   // indices into this array - remove/pick-candidate/readForm all index back into
   // it, so display order and array order have to stay the same thing.
@@ -280,11 +286,10 @@ function fillForm(key){
   if(!e.saved_partners.length) $('partnerSel').value='new';
   updateCandidatePicker(key);
   const lg = e.lags;
-  $('lagPre').value = lg.pre_seconds ?? 0;
-  $('lagPreRandom').checked = !!lg.pre_random;
+  $('lagPreMin').value  = lg.pre_min_seconds  ?? 0;
+  $('lagPreMax').value  = lg.pre_max_seconds  ?? 0;
   $('lagPostMin').value = lg.post_min_seconds ?? 0;
   $('lagPostMax').value = lg.post_max_seconds ?? 0;
-  updateLagNote();
   updateRemoveBtn(key);
   showStatus(key);
   const pn = Object.keys(e.presets);
@@ -370,26 +375,20 @@ function removePartner(key){
     save(undefined, 'Partner removed');
 }
 // Mirrors resolve_lags() in book.py: never negative, min<=max. The bot re-clamps and
-// caps server-side anyway - this is just so the phone shows honest numbers.
+// caps server-side anyway - this is just so the phone stores honest numbers.
 function readLags(){
-  const n = (id, dflt=0) => {
+  const n = id => {
     const v = Number($(id).value);
-    return Number.isFinite(v) && v >= 0 ? v : dflt;      // blank/garbage -> 0, not NaN
+    return Number.isFinite(v) && v >= 0 ? v : 0;         // blank/garbage -> 0, not NaN
   };
-  let lo = n('lagPostMin'), hi = n('lagPostMax');
-  if(lo > hi) [lo, hi] = [hi, lo];
-  return {pre_seconds:n('lagPre'), pre_random:$('lagPreRandom').checked,
-          post_min_seconds:lo, post_max_seconds:hi};
-}
-function updateLagNote(){
-  const l = readLags();
-  const bits = [];
-  bits.push(l.pre_seconds > 0
-    ? `Others get ${l.pre_random ? `up to ${l.pre_seconds}s` : `${l.pre_seconds}s`} first.`
-    : 'Books the instant booking opens.');
-  if(l.post_max_seconds > 0)
-    bits.push(`Then holds the court ${l.post_min_seconds}–${l.post_max_seconds}s before finishing.`);
-  $('lagNote').textContent = bits.join(' ');
+  const pair = (a, b) => {
+    let lo = n(a), hi = n(b);
+    return lo > hi ? [hi, lo] : [lo, hi];               // U[3,1] is just U[1,3]
+  };
+  const [preLo, preHi] = pair('lagPreMin', 'lagPreMax');
+  const [postLo, postHi] = pair('lagPostMin', 'lagPostMax');
+  return {pre_min_seconds:preLo, pre_max_seconds:preHi,
+          post_min_seconds:postLo, post_max_seconds:postHi};
 }
 
 function readForm(key, enabled){
@@ -467,8 +466,6 @@ $('partnerSel').onchange = ()=>{ $('partnerName').style.display =
   $('partnerSel').value==='new'?'block':'none'; updateCandidatePicker($('user').value);
   updateRemoveBtn($('user').value); };
 $('candidateSel').onchange = ()=> pickCandidate($('user').value);
-for(const id of ['lagPre','lagPreRandom','lagPostMin','lagPostMax'])
-  $(id).oninput = $(id).onchange = updateLagNote;
 $('partnerAdd').onclick = ()=> addPartner($('user').value);
 $('partnerDel').onclick = ()=> removePartner($('user').value);
 $('epSel').onchange = ()=> loadEditorPreset($('user').value);
