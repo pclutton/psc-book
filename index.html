@@ -15,7 +15,7 @@
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
           padding:16px; margin-bottom:14px; }
   label { display:block; font-size:.85rem; color:var(--muted); margin:12px 0 4px; }
-  input[type=text], input[type=password], input[type=date], select {
+  input[type=text], input[type=password], input[type=date], input[type=number], select {
     width:100%; padding:10px; border-radius:8px; border:1px solid var(--line);
     background:var(--chipbg); color:var(--ink); font-size:1rem; }
   .chips { display:flex; gap:8px; flex-wrap:wrap; }
@@ -41,8 +41,10 @@
   .status { font-size:.9rem; color:var(--muted); margin-top:10px; }
   .status.armed { color:var(--accent); }
   .booked { color:var(--accent); }
-  details { margin-top:14px; border-top:1px solid var(--line); padding-top:8px; }
-  summary { color:var(--muted); font-size:.9rem; cursor:pointer; padding:4px 0; }
+  /* Three collapsed sections now, so keep each row tight - the whole form has to fit
+     an iPhone 8 (375x667) without scrolling. */
+  details { margin-top:6px; border-top:1px solid var(--line); padding-top:5px; }
+  summary { color:var(--muted); font-size:.9rem; cursor:pointer; padding:2px 0; }
   .toast { position:fixed; left:50%; bottom:20px; transform:translateX(-50%);
            background:var(--chipbg); border:1px solid var(--line); padding:12px 18px;
            border-radius:10px; opacity:0; transition:opacity .2s; pointer-events:none;
@@ -123,6 +125,24 @@
     <button class="primary" id="epSave" type="button">Save preset</button>
   </details>
 
+  <details id="lagEditor">
+    <summary>Timing</summary>
+    <label>Head start for other members (seconds, 0 = none)</label>
+    <input type="number" id="lagPre" min="0" max="60" step="0.5" inputmode="decimal">
+    <div class="toggle">
+      <input type="checkbox" id="lagPreRandom">
+      <label for="lagPreRandom" style="margin:0">Randomise it (0 to N, so you sometimes lose)</label>
+    </div>
+    <label>Pause after getting the court (seconds, min &ndash; max)</label>
+    <div class="chips">
+      <input type="number" id="lagPostMin" min="0" step="1" inputmode="numeric"
+             style="width:47%" placeholder="min">
+      <input type="number" id="lagPostMax" min="0" step="1" inputmode="numeric"
+             style="width:47%" placeholder="max">
+    </div>
+    <div class="status" id="lagNote"></div>
+  </details>
+
   <div class="warn" id="lockWarn">Booking is locking in for today &mdash; changes now apply to future days.</div>
   <div class="btnrow">
     <button class="primary" id="book" type="button">Book</button>
@@ -157,6 +177,9 @@ function entry(key){ if(!loaded[key]) loaded[key]={};
   e.request ??= {enabled:false,date:'today',times:[],court_preset:'Hardcourt',partner:null};
   e.presets ??= JSON.parse(JSON.stringify(CFG.defaultPresets));
   e.saved_partners ??= [];
+  // Deliberate delays, 0 = off (the bot's normal full-speed behaviour). `lags` sits
+  // OUTSIDE `request` because request is rewritten/cleared every morning.
+  e.lags ??= {pre_seconds:0, pre_random:true, post_min_seconds:0, post_max_seconds:0};
   // Sorted here (not just at render) because the dropdown's option values are
   // indices into this array - remove/pick-candidate/readForm all index back into
   // it, so display order and array order have to stay the same thing.
@@ -256,6 +279,12 @@ function fillForm(key){
   $('partnerName').style.display = e.saved_partners.length? 'none':'block';
   if(!e.saved_partners.length) $('partnerSel').value='new';
   updateCandidatePicker(key);
+  const lg = e.lags;
+  $('lagPre').value = lg.pre_seconds ?? 0;
+  $('lagPreRandom').checked = !!lg.pre_random;
+  $('lagPostMin').value = lg.post_min_seconds ?? 0;
+  $('lagPostMax').value = lg.post_max_seconds ?? 0;
+  updateLagNote();
   updateRemoveBtn(key);
   showStatus(key);
   const pn = Object.keys(e.presets);
@@ -340,6 +369,29 @@ function removePartner(key){
   else
     save(undefined, 'Partner removed');
 }
+// Mirrors resolve_lags() in book.py: never negative, min<=max. The bot re-clamps and
+// caps server-side anyway - this is just so the phone shows honest numbers.
+function readLags(){
+  const n = (id, dflt=0) => {
+    const v = Number($(id).value);
+    return Number.isFinite(v) && v >= 0 ? v : dflt;      // blank/garbage -> 0, not NaN
+  };
+  let lo = n('lagPostMin'), hi = n('lagPostMax');
+  if(lo > hi) [lo, hi] = [hi, lo];
+  return {pre_seconds:n('lagPre'), pre_random:$('lagPreRandom').checked,
+          post_min_seconds:lo, post_max_seconds:hi};
+}
+function updateLagNote(){
+  const l = readLags();
+  const bits = [];
+  bits.push(l.pre_seconds > 0
+    ? `Others get ${l.pre_random ? `up to ${l.pre_seconds}s` : `${l.pre_seconds}s`} first.`
+    : 'Books the instant booking opens.');
+  if(l.post_max_seconds > 0)
+    bits.push(`Then holds the court ${l.post_min_seconds}–${l.post_max_seconds}s before finishing.`);
+  $('lagNote').textContent = bits.join(' ');
+}
+
 function readForm(key, enabled){
   const e = entry(key);
   let partner;
@@ -356,6 +408,7 @@ function readForm(key, enabled){
   // absolute date (the picker's min is today, so it can never be in the past).
   e.request = { enabled, date:$('date').value, times:[...timeOrder],
     court_preset:$('preset').value, partner };
+  e.lags = readLags();          // sibling of request: survives each morning's rewrite
   return e;
 }
 
@@ -414,6 +467,8 @@ $('partnerSel').onchange = ()=>{ $('partnerName').style.display =
   $('partnerSel').value==='new'?'block':'none'; updateCandidatePicker($('user').value);
   updateRemoveBtn($('user').value); };
 $('candidateSel').onchange = ()=> pickCandidate($('user').value);
+for(const id of ['lagPre','lagPreRandom','lagPostMin','lagPostMax'])
+  $(id).oninput = $(id).onchange = updateLagNote;
 $('partnerAdd').onclick = ()=> addPartner($('user').value);
 $('partnerDel').onclick = ()=> removePartner($('user').value);
 $('epSel').onchange = ()=> loadEditorPreset($('user').value);
